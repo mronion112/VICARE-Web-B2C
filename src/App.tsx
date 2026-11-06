@@ -3,6 +3,8 @@ import { accounts, Family, FamilyAlert, families, getFamilyById, VitalStatus } f
 
 type Page = "monitoring" | "alerts" | "profile" | "settings";
 type IconName = "monitor" | "bell" | "person" | "settings" | "logout" | "heart" | "thermometer" | "oxygen" | "lungs" | "camera" | "shield" | "clock" | "check" | "alert" | "arrow" | "back" | "home" | "filter" | "family" | "activity" | "close";
+type AppHistoryState = { appKey: string; page: Page; position: number };
+const isPage = (value: unknown): value is Page => value === "monitoring" || value === "alerts" || value === "profile" || value === "settings";
 
 const iconPaths: Record<IconName, string[]> = {
   monitor: ["M3 4.75A1.75 1.75 0 0 1 4.75 3h14.5A1.75 1.75 0 0 1 21 4.75v10.5A1.75 1.75 0 0 1 19.25 17H4.75A1.75 1.75 0 0 1 3 15.25z", "M8 21h8M12 17v4M7 10h2l1.2-2.5 2.2 5 1.4-2.5H17"],
@@ -295,54 +297,68 @@ function SettingsPage({ family, username, onLogout }: { family: Family; username
 }
 
 export default function App() {
-  const [session, setSession] = useState<{ username: string; familyId: string } | null>(null);
+  const [session, setSession] = useState<{ username: string; familyId: string; historyKey: string } | null>(null);
   const [page, setPage] = useState<Page>("monitoring");
   const [resolutionOverrides, setResolutionOverrides] = useState<Record<string, "open" | "resolved">>({});
   const [canGoBack, setCanGoBack] = useState(false);
-  const pageHistory = useRef<Page[]>([]);
+  const historyPosition = useRef(0);
   const family = session ? getFamilyById(session.familyId) : undefined;
 
   const navigate = useCallback((nextPage: Page) => {
     if (page === nextPage) return;
-    pageHistory.current.push(page);
-    setCanGoBack(true);
+    if (!session) return;
+    const position = historyPosition.current + 1;
+    const state: AppHistoryState = { appKey: session.historyKey, page: nextPage, position };
+    window.history.pushState(state, "", window.location.href);
+    historyPosition.current = position;
+    setCanGoBack(position > 0);
     setPage(nextPage);
-  }, [page]);
+  }, [page, session]);
 
   const goBack = useCallback(() => {
-    const previousPage = pageHistory.current.pop();
-    if (!previousPage) return;
-    setPage(previousPage);
-    setCanGoBack(pageHistory.current.length > 0);
+    if (historyPosition.current > 0) window.history.back();
   }, []);
 
   useEffect(() => {
     if (!session) return;
+    const handlePopState = (event: PopStateEvent) => {
+      const state = event.state as AppHistoryState | null;
+      if (state?.appKey !== session.historyKey || !isPage(state.page) || !Number.isInteger(state.position)) return;
+      historyPosition.current = state.position;
+      setPage(state.page);
+      setCanGoBack(state.position > 0);
+    };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.altKey && event.key === "ArrowLeft" && pageHistory.current.length > 0) {
+      if (event.altKey && event.key === "ArrowLeft" && historyPosition.current > 0) {
         event.preventDefault();
-        goBack();
+        window.history.back();
       }
     };
+    window.addEventListener("popstate", handlePopState);
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [session, canGoBack, goBack]);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [session]);
 
   const login = (username: string, password: string) => {
     const account = accounts.find((candidate) => candidate.username === username && candidate.password === password);
     if (!account) return "Tên đăng nhập hoặc mật khẩu chưa đúng.";
-    pageHistory.current = [];
+    const historyKey = `vicare-family-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    historyPosition.current = 0;
+    window.history.replaceState({ appKey: historyKey, page: "monitoring", position: 0 } satisfies AppHistoryState, "", window.location.href);
     setCanGoBack(false);
-    setSession({ username: account.username, familyId: account.familyId });
+    setSession({ username: account.username, familyId: account.familyId, historyKey });
     setPage("monitoring");
     return null;
   };
-  const logout = () => { pageHistory.current = []; setCanGoBack(false); setSession(null); setPage("monitoring"); setResolutionOverrides({}); };
+  const logout = () => { historyPosition.current = 0; window.history.replaceState(null, "", window.location.href); setCanGoBack(false); setSession(null); setPage("monitoring"); setResolutionOverrides({}); };
   const toggleAlert = (id: string, current: "open" | "resolved") => setResolutionOverrides((previous) => ({ ...previous, [id]: current === "open" ? "resolved" : "open" }));
 
   if (!session || !family) return <Login onLogin={login} />;
   return <AppShell family={family} page={page} resolutionOverrides={resolutionOverrides} canGoBack={canGoBack} onNavigate={navigate} onBack={goBack} onLogout={logout}>
-    {page === "monitoring" && <Monitoring family={family} resolutionOverrides={resolutionOverrides} onProfile={() => setPage("profile")} onAlerts={() => setPage("alerts")} />}
+    {page === "monitoring" && <Monitoring family={family} resolutionOverrides={resolutionOverrides} onProfile={() => navigate("profile")} onAlerts={() => navigate("alerts")} />}
     {page === "alerts" && <AlertsPage family={family} resolutionOverrides={resolutionOverrides} onToggle={toggleAlert} />}
     {page === "profile" && <ProfilePage family={family} resolutionOverrides={resolutionOverrides} />}
     {page === "settings" && <SettingsPage family={family} username={session.username} onLogout={logout} />}
